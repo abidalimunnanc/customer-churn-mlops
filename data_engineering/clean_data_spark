@@ -1,0 +1,61 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, when, trim
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Initialize Spark session with proper S3 config
+spark = SparkSession.builder \
+    .appName("Telco Churn Data Cleaning") \
+    .config("spark.jars.packages", "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262") \
+    .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
+    .config("spark.hadoop.fs.s3a.access.key", os.getenv("AWS_ACCESS_KEY_ID")) \
+    .config("spark.hadoop.fs.s3a.secret.key", os.getenv("AWS_SECRET_ACCESS_KEY")) \
+    .config("spark.hadoop.fs.s3a.endpoint", "s3.amazonaws.com") \
+    .config("spark.hadoop.fs.s3a.path.style.access", "true") \
+    .getOrCreate()
+
+# Input/output paths - MAKE SURE THESE ARE CORRECT
+input_path = "s3a://custchurn2025/raw/telco_churn.csv"
+output_path = "s3a://custchurn2025/cleaned/telco_cleaned.parquet"
+
+# Test connection first
+try:
+    print("Testing S3 connection...")
+    test_df = spark.read.csv(input_path, header=True, inferSchema=True).limit(1)
+    print(f"✅ Connection successful! Found columns: {test_df.columns}")
+except Exception as e:
+    print(f"❌ Connection failed: {str(e)}")
+    spark.stop()
+    exit(1)
+
+# Rest of your processing code...
+df = spark.read.csv(input_path, header=True, inferSchema=True)
+
+print(df)
+
+
+# Trim column names
+for c in df.columns:
+    df = df.withColumnRenamed(c, c.strip())
+
+# Clean 'TotalCharges': convert to float, handle blanks
+df = df.withColumn("TotalCharges",
+    when(trim(col("TotalCharges")) == "", None).otherwise(col("TotalCharges").cast("double"))
+)
+
+# Drop rows with nulls
+df = df.dropna()
+
+# Optional: trim string columns
+string_cols = [f.name for f in df.schema.fields if f.dataType.simpleString() == 'string']
+for c in string_cols:
+    df = df.withColumn(c, trim(col(c)))
+
+# Save output
+df.write.mode("overwrite").parquet(output_path)
+print(f"✅ Data saved to {output_path}")
+
+spark.stop()
